@@ -17,7 +17,7 @@ st.title("🧠 Ask Questions from Web Pages")
 def load_embedder():
     return SentenceTransformer("all-MiniLM-L6-v2")
 
-embed_model = load_embedder()
+embed_model = SentenceTransformer('./cached_model')
 
 # Scrape article content
 def scrape_url(url):

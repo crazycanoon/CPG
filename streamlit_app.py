@@ -8,7 +8,7 @@ import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 st.set_page_config(page_title="Web Q&A", layout="wide")
-st.title("🔎 Ask Questions from Webpages (Hosted Version)")
+st.title("🔎 Ask Questions from Webpages (Streamlit Cloud Compatible)")
 
 # URL input section
 with st.expander("🔗 Source URLs"):
@@ -21,17 +21,19 @@ with st.expander("❓ Ask a Question"):
 @st.cache_resource
 def load_embedder():
     try:
-        return SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L3-v2', use_auth_token=False)
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu", trust_remote_code=False)
+        model.encode(["test"], show_progress_bar=False)  # Force model initialization
+        return model
     except Exception as e:
-        st.error("Failed to load embedding model. Please try again later.")
+        st.error(f"❌ Failed to load embedding model.\n\nError: {e}")
         st.stop()
 
 @st.cache_resource
 def load_qa_model():
     try:
-        return pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
+        return pipeline("question-answering", model="distilbert-base-cased-distilled-squad", device=-1)
     except Exception as e:
-        st.error("Failed to load QA model. Please try again later.")
+        st.error(f"❌ Failed to load QA model.\n\nError: {e}")
         st.stop()
 
 embed_model = load_embedder()
@@ -45,6 +47,7 @@ def scrape_text(url):
             tag.decompose()
         return soup.get_text(separator=" ", strip=True)
     except Exception as e:
+        st.warning(f"Could not fetch {url}: {e}")
         return ""
 
 def chunk_text(text):
@@ -52,7 +55,7 @@ def chunk_text(text):
     return splitter.split_text(text)
 
 def build_faiss_index(chunks):
-    embeddings = embed_model.encode(chunks, convert_to_numpy=True)
+    embeddings = embed_model.encode(chunks, convert_to_numpy=True, show_progress_bar=False)
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
     return index, embeddings
@@ -69,7 +72,7 @@ if st.button("💡 Get Answer"):
             st.error("Couldn't extract readable text from the URLs.")
         else:
             faiss_index, all_embeddings = build_faiss_index(chunks)
-            question_embedding = embed_model.encode([user_question])
+            question_embedding = embed_model.encode([user_question], show_progress_bar=False)
             D, I = faiss_index.search(np.array(question_embedding), k=3)
 
             context = "\n".join([chunks[i] for i in I[0]])
@@ -79,4 +82,4 @@ if st.button("💡 Get Answer"):
                     st.success("Answer:")
                     st.write(result["answer"])
                 except Exception as e:
-                    st.error("Failed to generate answer. Try again or simplify your input.")
+                    st.error(f"Failed to generate answer: {e}")

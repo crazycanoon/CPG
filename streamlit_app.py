@@ -8,7 +8,7 @@ import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 st.set_page_config(page_title="Web Q&A", layout="wide")
-st.title("🔎 Ask Questions from Webpages (Streamlit Cloud Compatible)")
+st.title("🔎 Ask Questions from Webpages (For 100th time)")
 
 # URL input section
 with st.expander("🔗 Source URLs"):

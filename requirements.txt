@@ -1,1 +1,1 @@
-streamlit
+streamlit newspaper3k sentence-transformers faiss-cpu openai lxml_html_clean

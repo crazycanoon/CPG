@@ -7,8 +7,8 @@ import faiss
 import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-st.set_page_config(page_title="Online Q&A from Web", layout="wide")
-st.title("🔍 Ask Questions from Webpages (Online Version)")
+st.set_page_config(page_title="Web Q&A", layout="wide")
+st.title("🔎 Ask Questions from Webpages (Hosted Version)")
 
 # URL input section
 with st.expander("🔗 Source URLs"):
@@ -20,11 +20,19 @@ with st.expander("❓ Ask a Question"):
 
 @st.cache_resource
 def load_embedder():
-    return SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    try:
+        return SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L3-v2', use_auth_token=False)
+    except Exception as e:
+        st.error("Failed to load embedding model. Please try again later.")
+        st.stop()
 
 @st.cache_resource
 def load_qa_model():
-    return pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
+    try:
+        return pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
+    except Exception as e:
+        st.error("Failed to load QA model. Please try again later.")
+        st.stop()
 
 embed_model = load_embedder()
 qa_model = load_qa_model()
@@ -66,6 +74,9 @@ if st.button("💡 Get Answer"):
 
             context = "\n".join([chunks[i] for i in I[0]])
             with st.spinner("Searching for answer..."):
-                result = qa_model(question=user_question, context=context)
-                st.success("Answer:")
-                st.write(result["answer"])
+                try:
+                    result = qa_model(question=user_question, context=context)
+                    st.success("Answer:")
+                    st.write(result["answer"])
+                except Exception as e:
+                    st.error("Failed to generate answer. Try again or simplify your input.")

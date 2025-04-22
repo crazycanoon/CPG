@@ -1,98 +1,71 @@
 import streamlit as st
-from newspaper import Article
+import requests
+from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
+from transformers import pipeline
 import faiss
 import numpy as np
-import openai
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# Load API key from Streamlit secrets
-openai.api_key = st.secrets["openai"]["api_key"]
+st.set_page_config(page_title="Online Q&A from Web", layout="wide")
+st.title("🔍 Ask Questions from Webpages (Online Version)")
 
-# Page config
-st.set_page_config(page_title="Web Q&A App", layout="centered")
-st.title("🧠 Ask Questions from Web Pages")
+# URL input section
+with st.expander("🔗 Source URLs"):
+    urls_input = st.text_area("Enter one or more URLs (one per line)", height=150)
 
-# Load embedding model
+# Prompt input section
+with st.expander("❓ Ask a Question"):
+    user_question = st.text_input("Enter your question here:")
+
 @st.cache_resource
 def load_embedder():
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    return SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 
-try:
-    embed_model = SentenceTransformer('./cached_model')
-    st.success("Model loaded successfully!")
-except Exception as e:
-    st.error(f"Failed to load model: {str(e)}")
+@st.cache_resource
+def load_qa_model():
+    return pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
 
+embed_model = load_embedder()
+qa_model = load_qa_model()
 
-# Scrape article content
-def scrape_url(url):
+def scrape_text(url):
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text
+        res = requests.get(url, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        return soup.get_text(separator=" ", strip=True)
     except Exception as e:
-        return f"[Error scraping {url}]: {str(e)}"
+        return ""
 
-# Break text into chunks
-def chunk_text(text, chunk_size=500):
-    words = text.split()
-    return [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
+def chunk_text(text):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+    return splitter.split_text(text)
 
-# Build FAISS index
-def create_index(chunks):
-    embeddings = embed_model.encode(chunks)
+def build_faiss_index(chunks):
+    embeddings = embed_model.encode(chunks, convert_to_numpy=True)
     index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(np.array(embeddings))
+    index.add(embeddings)
     return index, embeddings
 
-# Retrieve relevant chunks
-def get_top_chunks(question, chunks, index, top_k=3):
-    q_vec = embed_model.encode([question])
-    _, indices = index.search(np.array(q_vec), top_k)
-    return [chunks[i] for i in indices[0]]
-
-# Ask GPT using limited context
-def ask_gpt(context, question):
-    prompt = f"""You are a helpful assistant. Use only the context below to answer the question.
-
-Context:
-{context}
-
-Question: {question}
-Answer:"""
-
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.5,
-        max_tokens=300,
-    )
-    return response.choices[0].message.content.strip()
-
-# Section: Source input
-st.markdown("### 🔗 Provide Source URLs")
-with st.expander("Click to enter webpage URLs (comma-separated)"):
-    urls = st.text_area("Example: https://en.wikipedia.org/wiki/DevOps, https://realpython.com/python-web-scraping/")
-
-# Section: Prompt input
-st.markdown("### 💬 Ask Your Question")
-question = st.text_input("Type your question based on the content from those pages:")
-
-# Button
-if st.button("Get Answer"):
-    if not urls.strip() or not question.strip():
-        st.warning("Please provide both source URLs and a question.")
+if st.button("💡 Get Answer"):
+    if not urls_input.strip() or not user_question.strip():
+        st.warning("Please enter both URLs and a question.")
     else:
-        with st.spinner("Scraping and thinking..."):
-            url_list = [u.strip() for u in urls.split(",") if u.strip()]
-            scraped_texts = [scrape_url(url) for url in url_list]
-            full_text = "\n".join(scraped_texts)
-            chunks = chunk_text(full_text)
-            index, _ = create_index(chunks)
-            top_chunks = get_top_chunks(question, chunks, index)
-            context = "\n".join(top_chunks)
-            answer = ask_gpt(context, question)
+        urls = [u.strip() for u in urls_input.splitlines() if u.strip()]
+        full_text = "\n".join([scrape_text(u) for u in urls])
+        chunks = chunk_text(full_text)
 
-        st.success("✅ Answer")
-        st.write(answer)
+        if not chunks:
+            st.error("Couldn't extract readable text from the URLs.")
+        else:
+            faiss_index, all_embeddings = build_faiss_index(chunks)
+            question_embedding = embed_model.encode([user_question])
+            D, I = faiss_index.search(np.array(question_embedding), k=3)
+
+            context = "\n".join([chunks[i] for i in I[0]])
+            with st.spinner("Searching for answer..."):
+                result = qa_model(question=user_question, context=context)
+                st.success("Answer:")
+                st.write(result["answer"])

@@ -1,7 +1,6 @@
 streamlit
-transformers
+newspaper3k
 sentence-transformers
 faiss-cpu
-langchain
-beautifulsoup4
-requests
+openai
+lxml_html_clean

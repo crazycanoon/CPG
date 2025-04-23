@@ -85,7 +85,7 @@ def answer_question_openai(question, context):
         return f"An unexpected error occurred during OpenAI completion: {e}"
 
 # Streamlit UI
-st.title("Web Content Q&A Tool Powered by OpenAI")
+st.title("Web Content Q&A Tool (Backend Focused)")
 
 urls_input = st.text_area("Enter one or more URLs (one per line):")
 question = st.text_input("Ask a question about the content:")

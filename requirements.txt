@@ -1,6 +1,7 @@
 streamlit
 transformers
+sentence-transformers
+faiss-cpu
 langchain
 beautifulsoup4
 requests
-faiss-cpu

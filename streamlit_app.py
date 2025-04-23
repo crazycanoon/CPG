@@ -1,43 +1,39 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from sentence_transformers import SentenceTransformer
 from transformers import pipeline
-import faiss
 import numpy as np
+import faiss
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-st.set_page_config(page_title="Web Q&A", layout="wide")
-st.title("🔎 Ask Questions from Webpages (For 100th time)")
+st.set_page_config(page_title="Web Q&A (Cloud-Friendly)", layout="wide")
+st.title("🔎 Ask Questions from Webpages")
 
-# URL input section
-with st.expander("🔗 Source URLs"):
-    urls_input = st.text_area("Enter one or more URLs (one per line)", height=150)
+HF_API_TOKEN = st.secrets["api"]["hf_token"]
+HF_EMBEDDING_ENDPOINT = "https://api-inference.huggingface.co/embeddings/sentence-transformers/all-MiniLM-L6-v2"
 
-# Prompt input section
-with st.expander("❓ Ask a Question"):
-    user_question = st.text_input("Enter your question here:")
-
-@st.cache_resource
-def load_embedder():
-    try:
-        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu", trust_remote_code=False)
-        model.encode(["test"], show_progress_bar=False)  # Force model initialization
-        return model
-    except Exception as e:
-        st.error(f"❌ Failed to load embedding model.\n\nError: {e}")
-        st.stop()
+def embed_sentences_hf(sentences):
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    data = {"inputs": sentences}
+    response = requests.post(HF_EMBEDDING_ENDPOINT, headers=headers, json=data)
+    response.raise_for_status()
+    return np.array(response.json())
 
 @st.cache_resource
 def load_qa_model():
     try:
-        return pipeline("question-answering", model="distilbert-base-cased-distilled-squad", device=-1)
+        return pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
     except Exception as e:
-        st.error(f"❌ Failed to load QA model.\n\nError: {e}")
+        st.error(f"❌ QA model load error: {e}")
         st.stop()
 
-embed_model = load_embedder()
 qa_model = load_qa_model()
+
+with st.expander("🔗 Source URLs"):
+    urls_input = st.text_area("Enter URLs (one per line)", height=150)
+
+with st.expander("❓ Your Question"):
+    user_question = st.text_input("Enter your question")
 
 def scrape_text(url):
     try:
@@ -54,32 +50,30 @@ def chunk_text(text):
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
     return splitter.split_text(text)
 
-def build_faiss_index(chunks):
-    embeddings = embed_model.encode(chunks, convert_to_numpy=True, show_progress_bar=False)
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
-    return index, embeddings
-
 if st.button("💡 Get Answer"):
     if not urls_input.strip() or not user_question.strip():
-        st.warning("Please enter both URLs and a question.")
+        st.warning("Enter URLs and a question.")
     else:
         urls = [u.strip() for u in urls_input.splitlines() if u.strip()]
         full_text = "\n".join([scrape_text(u) for u in urls])
         chunks = chunk_text(full_text)
 
         if not chunks:
-            st.error("Couldn't extract readable text from the URLs.")
+            st.error("No readable text found.")
         else:
-            faiss_index, all_embeddings = build_faiss_index(chunks)
-            question_embedding = embed_model.encode([user_question], show_progress_bar=False)
-            D, I = faiss_index.search(np.array(question_embedding), k=3)
+            try:
+                st.info("Embedding text via Hugging Face API...")
+                embeddings = embed_sentences_hf(chunks)
+                index = faiss.IndexFlatL2(embeddings.shape[1])
+                index.add(embeddings)
 
-            context = "\n".join([chunks[i] for i in I[0]])
-            with st.spinner("Searching for answer..."):
-                try:
-                    result = qa_model(question=user_question, context=context)
-                    st.success("Answer:")
-                    st.write(result["answer"])
-                except Exception as e:
-                    st.error(f"Failed to generate answer: {e}")
+                question_vec = embed_sentences_hf([user_question])
+                D, I = index.search(question_vec, k=3)
+
+                context = "\n".join([chunks[i] for i in I[0]])
+                result = qa_model(question=user_question, context=context)
+
+                st.success("Answer:")
+                st.write(result["answer"])
+            except Exception as e:
+                st.error(f"Processing error: {e}")

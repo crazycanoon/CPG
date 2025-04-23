@@ -1,6 +1,6 @@
 streamlit
-newspaper3k
-sentence-transformers
-faiss-cpu
+beautifulsoup4
+requests
+numpy
+scikit-learn
 openai
-lxml_html_clean

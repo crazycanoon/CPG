@@ -1,114 +1,98 @@
 import streamlit as st
-from bs4 import BeautifulSoup
-import requests
+from newspaper import Article
 from sentence_transformers import SentenceTransformer
+import faiss
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 import openai
-import os
 
-# Set your OpenAI API key
-openai.api_key = st.secrets.get("OPENAI_API_KEY")
+# Load API key from Streamlit secrets
+openai.api_key = st.secrets["openai"]["api_key"]
 
-# Load a pre-trained sentence transformer model
+# Page config
+st.set_page_config(page_title="Web Q&A App", layout="centered")
+st.title("🧠 Ask Questions from Web Pages")
+
+# Load embedding model
 @st.cache_resource
-def load_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+def load_embedder():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
-embedding_model = load_embedding_model()
+try:
+    embed_model = SentenceTransformer('./cached_model')
+    st.success("Model loaded successfully!")
+except Exception as e:
+    st.error(f"Failed to load model: {str(e)}")
 
-# Function to scrape text content from a URL
-def scrape_text(url):
+
+# Scrape article content
+def scrape_url(url):
     try:
-        response = requests.get(url, timeout=10)  # Add a timeout
-        response.raise_for_status()  # Raise an exception for bad status codes
-        soup = BeautifulSoup(response.content, 'html.parser')
-        # Extract main text content (you might need to adjust selectors based on website structure)
-        for script in soup(["script", "style"]):
-            script.decompose()
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        return text
-    except requests.exceptions.RequestException as e:
-        return f"Error fetching URL: {e}"
+        article = Article(url)
+        article.download()
+        article.parse()
+        return article.text
     except Exception as e:
-        return f"Error processing URL: {e}"
+        return f"[Error scraping {url}]: {str(e)}"
 
-# Function to embed text
-def embed_text(text):
-    return embedding_model.encode(text)
+# Break text into chunks
+def chunk_text(text, chunk_size=500):
+    words = text.split()
+    return [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
 
-# Function to perform vector search
-def search_text(query_embedding, embeddings, documents, top_n=3):
-    similarities = cosine_similarity([query_embedding], embeddings)[0]
-    sorted_indices = np.argsort(similarities, axis=0)[::-1]
-    results = [(documents[i], similarities[i]) for i in sorted_indices[:top_n]]
-    return results
+# Build FAISS index
+def create_index(chunks):
+    embeddings = embed_model.encode(chunks)
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(np.array(embeddings))
+    return index, embeddings
 
-# Function to answer the question using OpenAI API
-def answer_question_openai(question, context):
-    combined_context = "\n\n".join([doc for doc, _ in context])
-    prompt = f"Based on the following information:\n\n{combined_context}\n\nAnswer the question: {question}"
-    try:
-        response = openai.Completion.create(
-            model="gpt-3.5-turbo-instruct",  # Or another suitable model
-            prompt=prompt,
-            max_tokens=200,  # Adjust as needed
-            n=1,
-            stop=None,
-            temperature=0.2,  # Adjust for creativity vs. accuracy
-        )
-        return response.choices[0].text.strip()
-    except openai.error.OpenAIError as e:
-        return f"Error communicating with OpenAI: {e}"
+# Retrieve relevant chunks
+def get_top_chunks(question, chunks, index, top_k=3):
+    q_vec = embed_model.encode([question])
+    _, indices = index.search(np.array(q_vec), top_k)
+    return [chunks[i] for i in indices[0]]
 
-# Streamlit UI
-st.title("Web Content Q&A Tool Powered by OpenAI")
+# Ask GPT using limited context
+def ask_gpt(context, question):
+    prompt = f"""You are a helpful assistant. Use only the context below to answer the question.
 
-urls_input = st.text_area("Enter one or more URLs (one per line):")
-question = st.text_input("Ask a question about the content:")
+Context:
+{context}
 
-if st.button("Process URLs and Ask"):
-    if urls_input and question:
-        urls = [url.strip() for url in urls_input.splitlines() if url.strip()]
-        if not urls:
-            st.warning("Please enter at least one URL.")
-        else:
-            st.info("Processing URLs and extracting content...")
-            documents = []
-            embeddings_list = []
-            for url in urls:
-                with st.spinner(f"Scraping content from {url}"):
-                    text_content = scrape_text(url)
-                    if "Error" not in text_content:
-                        documents.append(text_content)
-                        embeddings_list.append(embed_text(text_content))
-                    else:
-                        st.error(f"Failed to process {url}: {text_content}")
+Question: {question}
+Answer:"""
 
-            if documents:
-                st.success("Content from URLs processed successfully!")
-                query_embedding = embed_text(question)
-                with st.spinner("Searching for relevant information..."):
-                    search_results = search_text(query_embedding, np.array(embeddings_list), documents)
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+        max_tokens=300,
+    )
+    return response.choices[0].message.content.strip()
 
-                if search_results:
-                    st.subheader("Retrieved Context:")
-                    for doc, similarity in search_results:
-                        st.info(f"Similarity: {similarity:.4f}\n{doc[:500]}...") # Display first 500 chars
+# Section: Source input
+st.markdown("### 🔗 Provide Source URLs")
+with st.expander("Click to enter webpage URLs (comma-separated)"):
+    urls = st.text_area("Example: https://en.wikipedia.org/wiki/DevOps, https://realpython.com/python-web-scraping/")
 
-                    st.subheader("Answer:")
-                    with st.spinner("Generating answer with OpenAI..."):
-                        answer = answer_question_openai(question, search_results)
-                        st.write(answer)
-                else:
-                    st.warning("No relevant information found in the processed content.")
-            else:
-                st.warning("No content was successfully processed from the provided URLs.")
-    elif not urls_input:
-        st.warning("Please enter one or more URLs.")
-    elif not question:
-        st.warning("Please enter a question.")
+# Section: Prompt input
+st.markdown("### 💬 Ask Your Question")
+question = st.text_input("Type your question based on the content from those pages:")
 
+# Button
+if st.button("Get Answer"):
+    if not urls.strip() or not question.strip():
+        st.warning("Please provide both source URLs and a question.")
+    else:
+        with st.spinner("Scraping and thinking..."):
+            url_list = [u.strip() for u in urls.split(",") if u.strip()]
+            scraped_texts = [scrape_url(url) for url in url_list]
+            full_text = "\n".join(scraped_texts)
+            chunks = chunk_text(full_text)
+            index, _ = create_index(chunks)
+            top_chunks = get_top_chunks(question, chunks, index)
+            context = "\n".join(top_chunks)
+            answer = ask_gpt(context, question)
+
+        st.success("✅ Answer")
+        st.write(answer)
